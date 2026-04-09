@@ -38,7 +38,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // 2. ROBUST DATABASE CONNECTION (Using a Pool)
 const db = mysql.createPool({
     host: '77.37.35.4', 
-    user: 'neonix',
+    user: 'u517294510_neonix',
     password: 'Shittylife101@', // <-- MAKE SURE THIS IS CORRECT
     database: 'u517294510_neonix',
     waitForConnections: true,
