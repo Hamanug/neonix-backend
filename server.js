@@ -9,9 +9,9 @@ const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
 const app = express();
 
-// 1. IMPROVED CORS (Explicitly allowing your domain)
+// 1. IMPROVED CORS (Allows Live Site AND Local Testing)
 app.use(cors({
-    origin: 'https://henkdiesel.store',
+    origin: ['https://henkdiesel.store', 'https://www.henkdiesel.store', 'http://localhost:5173', 'http://localhost:5174', 'http://localhost:5000'],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -39,12 +39,12 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 const db = mysql.createPool({
     host: '77.37.35.4', 
     user: 'u517294510_neonix',
-    password: 'Shittylife101@', // <-- MAKE SURE THIS IS CORRECT
+    password: 'Shittylife101@', 
     database: 'u517294510_neonix',
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    enableKeepAlive: true, // Prevents Hostinger from "slamming the door"
+    enableKeepAlive: true, 
     keepAliveInitialDelay: 10000
 });
 
@@ -58,7 +58,7 @@ db.getConnection((err, connection) => {
     }
 });
 
-// --- API ROUTES (Keep your existing logic) ---
+// --- API ROUTES ---
 
 app.get('/api/categories', (req, res) => {
     db.query('SELECT * FROM categories ORDER BY name ASC', (err, results) => {
