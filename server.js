@@ -135,21 +135,135 @@ app.delete('/api/products/:id', (req, res) => {
     });
 });
 
+// --- UPDATED CHECKOUT ROUTE (Prevents Negative Stock) ---
 app.post('/api/checkout', (req, res) => {
     const { cart, totalAmount, type } = req.body;
     if (!cart || cart.length === 0) return res.status(400).json({ error: 'Cart is empty' });
-    const transQuery = `INSERT INTO transactions (type, total_amount, items) VALUES (?, ?, ?)`;
-    db.query(transQuery, [type || 'Sale', totalAmount, JSON.stringify(cart)], (err, result) => {
-        if (err) return res.status(500).json({ error: 'Failed to record transaction' });
-        let updateCount = 0;
-        cart.forEach(item => {
-            db.query(`UPDATE products SET quantity = quantity - ? WHERE id = ?`, [item.quantity, item.id], (upErr) => {
-                updateCount++;
-                if (updateCount === cart.length) res.status(200).json({ message: 'Checkout successful', transactionId: result.insertId });
+
+    // Step 1: Check stock levels before doing anything
+    const itemIds = cart.map(item => item.id);
+    db.query('SELECT id, name, quantity FROM products WHERE id IN (?)', [itemIds], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database error checking inventory' });
+
+        // Verify sufficient stock for each item
+        let insufficientItem = null;
+        for (const cartItem of cart) {
+            const dbItem = results.find(p => p.id === cartItem.id);
+            if (!dbItem || dbItem.quantity < cartItem.quantity) {
+                insufficientItem = dbItem ? dbItem.name : `Item ID ${cartItem.id}`;
+                break;
+            }
+        }
+
+        // Reject sale if it would cause negative stock
+        if (insufficientItem) {
+            return res.status(400).json({ error: `Not enough stock for ${insufficientItem}. Checkout aborted.` });
+        }
+
+        // Step 2: Proceed with the sale since stock is verified
+        const transQuery = `INSERT INTO transactions (type, total_amount, items) VALUES (?, ?, ?)`;
+        db.query(transQuery, [type || 'Sale', totalAmount, JSON.stringify(cart)], (err, result) => {
+            if (err) return res.status(500).json({ error: 'Failed to record transaction' });
+            
+            let updateCount = 0;
+            cart.forEach(item => {
+                db.query(`UPDATE products SET quantity = quantity - ? WHERE id = ?`, [item.quantity, item.id], (upErr) => {
+                    updateCount++;
+                    if (updateCount === cart.length) {
+                        res.status(200).json({ message: 'Checkout successful', transactionId: result.insertId });
+                    }
+                });
             });
         });
     });
 });
+
+// --- TRANSACTIONS API ---
+
+// 1. Fetch all transactions (Fixes the blank All Sales page)
+app.get('/api/transactions', (req, res) => {
+    db.query("SELECT id, type, total_amount, DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i') as time, items FROM transactions ORDER BY transaction_date DESC", (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database error fetching transactions' });
+        res.json(results);
+    });
+});
+
+// 2. Fetch a single transaction
+app.get('/api/transactions/:id', (req, res) => {
+    const { id } = req.params;
+    db.query("SELECT * FROM transactions WHERE id = ?", [id], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (results.length === 0) return res.status(404).json({ error: 'Transaction not found' });
+        res.json(results[0]);
+    });
+});
+
+// 3. True Delete (Erases record completely and restores stock)
+app.delete('/api/transactions/:id', (req, res) => {
+    const { id } = req.params;
+    
+    db.query("SELECT * FROM transactions WHERE id = ?", [id], (err, results) => {
+        if (err || results.length === 0) return res.status(500).json({ error: 'Transaction not found' });
+        
+        const transaction = results[0];
+        
+        if (transaction.type === 'Void') {
+            db.query("DELETE FROM transactions WHERE id = ?", [id], (delErr) => {
+                if (delErr) return res.status(500).json({ error: 'Failed to delete record' });
+                return res.json({ message: 'Voided record completely removed' });
+            });
+        } 
+        else {
+            const items = typeof transaction.items === 'string' ? JSON.parse(transaction.items) : transaction.items;
+            let completed = 0;
+            let hasError = false;
+
+            items.forEach(item => {
+                db.query("UPDATE products SET quantity = quantity + ? WHERE id = ?", [item.quantity, item.id], (updateErr) => {
+                    if (updateErr) hasError = true;
+                    completed++;
+                    
+                    if (completed === items.length) {
+                        db.query("DELETE FROM transactions WHERE id = ?", [id], (delErr) => {
+                            if (delErr || hasError) return res.status(500).json({ error: 'Deletion processed with errors' });
+                            res.json({ message: 'Transaction erased and stock restored' });
+                        });
+                    }
+                });
+            });
+        }
+    });
+});
+
+// 4. Void Sale (Keeps record, turns amount to 0, restores stock)
+app.post('/api/transactions/:id/void', (req, res) => {
+    const { id } = req.params;
+    db.query("SELECT * FROM transactions WHERE id = ?", [id], (err, results) => {
+        if (err || results.length === 0) return res.status(500).json({ error: 'Transaction not found' });
+        
+        const transaction = results[0];
+        if (transaction.type === 'Void') return res.status(400).json({ error: 'Already voided' });
+        
+        const items = typeof transaction.items === 'string' ? JSON.parse(transaction.items) : transaction.items;
+        let completed = 0;
+        let hasError = false;
+
+        items.forEach(item => {
+            db.query("UPDATE products SET quantity = quantity + ? WHERE id = ?", [item.quantity, item.id], (updateErr) => {
+                if (updateErr) hasError = true;
+                completed++;
+                if (completed === items.length) {
+                    db.query("UPDATE transactions SET type = 'Void', total_amount = 0 WHERE id = ?", [id], (voidErr) => {
+                        if (voidErr || hasError) return res.status(500).json({ error: 'Void processed with errors' });
+                        res.json({ message: 'Transaction voided', items: items }); 
+                    });
+                }
+            });
+        });
+    });
+});
+
+// --- DASHBOARD & AUTH ---
 
 app.get('/api/dashboard', (req, res) => {
     const stats = {};
