@@ -236,7 +236,7 @@ app.get('/api/restock/history', (req, res) => {
 
 // 1. Fetch all transactions (Fixes the blank All Sales page)
 app.get('/api/transactions', (req, res) => {
-    db.query("SELECT id, type, total_amount, DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i') as time, items FROM transactions ORDER BY transaction_date DESC", (err, results) => {
+    db.query("SELECT id, type, total_amount, DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i') as time, items FROM transactions WHERE type != 'Shipment' ORDER BY transaction_date DESC", (err, results) => {
         if (err) return res.status(500).json({ error: 'Database error fetching transactions' });
         res.json(results);
     });
@@ -327,7 +327,8 @@ app.get('/api/dashboard', (req, res) => {
             stats.lowStockCount = stockRes[0]?.lowStock || 0;
             db.query("SELECT SUM(quantity * selling_price) as valuation FROM products", (err, valRes) => {
                 stats.totalValuation = valRes[0]?.valuation || 0;
-                db.query("SELECT id, type, total_amount, DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i') as time, items FROM transactions ORDER BY transaction_date DESC LIMIT 100", (err, transRes) => {
+                // Updated line below to hide shipments from the recent transactions list on the dashboard
+                db.query("SELECT id, type, total_amount, DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i') as time, items FROM transactions WHERE type != 'Shipment' ORDER BY transaction_date DESC LIMIT 100", (err, transRes) => {
                     stats.recentTransactions = transRes || [];
                     res.json(stats);
                 });
