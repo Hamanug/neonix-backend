@@ -178,6 +178,60 @@ app.post('/api/checkout', (req, res) => {
     });
 });
 
+
+// --- RESTOCK & SHIPMENTS API ---
+
+// 1. Record a new shipment
+app.post('/api/restock', (req, res) => {
+    const { items } = req.body; 
+    if (!items || items.length === 0) return res.status(400).json({ error: 'No items in shipment' });
+
+    // Record as a 'Shipment' transaction with 0 monetary amount
+    const transQuery = `INSERT INTO transactions (type, total_amount, items) VALUES ('Shipment', 0, ?)`;
+    db.query(transQuery, [JSON.stringify(items)], (err, result) => {
+        if (err) return res.status(500).json({ error: 'Failed to record shipment transaction' });
+        
+        let updateCount = 0;
+        let hasError = false;
+
+        items.forEach(item => {
+            // Add to stock (+) instead of subtracting
+            db.query(`UPDATE products SET quantity = quantity + ? WHERE id = ?`, [item.quantity, item.id], (upErr) => {
+                if (upErr) hasError = true;
+                updateCount++;
+                
+                if (updateCount === items.length) {
+                    if (hasError) return res.status(500).json({ error: 'Shipment saved but some stock failed to update' });
+                    res.status(200).json({ message: 'Shipment recorded successfully' });
+                }
+            });
+        });
+    });
+});
+
+// 2. Fetch shipment history for the Purchases Ledger
+app.get('/api/restock/history', (req, res) => {
+    db.query("SELECT id, transaction_date as restock_date, items FROM transactions WHERE type = 'Shipment' ORDER BY transaction_date DESC", (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database error fetching history' });
+
+        let history = [];
+        // Flatten the transaction arrays into individual rows for your React ledger
+        results.forEach(tx => {
+            const items = typeof tx.items === 'string' ? JSON.parse(tx.items) : tx.items;
+            items.forEach(item => {
+                history.push({
+                    batch_id: `RCV-${tx.id.toString().padStart(4, '0')}`,
+                    restock_date: tx.restock_date,
+                    product_name: item.name,
+                    quantity_added: item.quantity,
+                    id: tx.id + '-' + item.id 
+                });
+            });
+        });
+        res.json(history);
+    });
+});
+
 // --- TRANSACTIONS API ---
 
 // 1. Fetch all transactions (Fixes the blank All Sales page)
