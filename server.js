@@ -9,7 +9,7 @@ const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
 const app = express();
 
-// 1. IMPROVED CORS (Allows Live Site AND Local Testing)
+// 1. IMPROVED CORS
 app.use(cors({
     origin: ['https://henkdiesel.store', 'https://www.henkdiesel.store', 'http://localhost:5173', 'http://localhost:5174', 'http://localhost:5000'],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -35,7 +35,7 @@ const upload = multer({ storage: storage });
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// 2. ROBUST DATABASE CONNECTION (Using a Pool)
+// 2. DATABASE CONNECTION
 const db = mysql.createPool({
     host: '77.37.35.4', 
     user: 'u517294510_neonix',
@@ -48,7 +48,6 @@ const db = mysql.createPool({
     keepAliveInitialDelay: 10000
 });
 
-// Test connection pool
 db.getConnection((err, connection) => {
     if (err) {
         console.error('Database connection failed:', err.message);
@@ -135,17 +134,14 @@ app.delete('/api/products/:id', (req, res) => {
     });
 });
 
-// --- UPDATED CHECKOUT ROUTE (Prevents Negative Stock) ---
 app.post('/api/checkout', (req, res) => {
     const { cart, totalAmount, type } = req.body;
     if (!cart || cart.length === 0) return res.status(400).json({ error: 'Cart is empty' });
 
-    // Step 1: Check stock levels before doing anything
     const itemIds = cart.map(item => item.id);
     db.query('SELECT id, name, quantity FROM products WHERE id IN (?)', [itemIds], (err, results) => {
         if (err) return res.status(500).json({ error: 'Database error checking inventory' });
 
-        // Verify sufficient stock for each item
         let insufficientItem = null;
         for (const cartItem of cart) {
             const dbItem = results.find(p => p.id === cartItem.id);
@@ -155,12 +151,10 @@ app.post('/api/checkout', (req, res) => {
             }
         }
 
-        // Reject sale if it would cause negative stock
         if (insufficientItem) {
             return res.status(400).json({ error: `Not enough stock for ${insufficientItem}. Checkout aborted.` });
         }
 
-        // Step 2: Proceed with the sale since stock is verified
         const transQuery = `INSERT INTO transactions (type, total_amount, items) VALUES (?, ?, ?)`;
         db.query(transQuery, [type || 'Sale', totalAmount, JSON.stringify(cart)], (err, result) => {
             if (err) return res.status(500).json({ error: 'Failed to record transaction' });
@@ -178,31 +172,34 @@ app.post('/api/checkout', (req, res) => {
     });
 });
 
+// ==========================================
+// --- RESTOCK & SHIPMENTS API (NEW TABLE) ---
+// ==========================================
 
-// --- RESTOCK & SHIPMENTS API ---
-
-// 1. Record a new shipment
+// 1. Record a new shipment directly into the 'shipments' table
 app.post('/api/restock', (req, res) => {
-    const { items } = req.body; 
+    const { items, batchId } = req.body; 
     if (!items || items.length === 0) return res.status(400).json({ error: 'No items in shipment' });
 
-    // Record as a 'Shipment' transaction with 0 monetary amount
-    const transQuery = `INSERT INTO transactions (type, total_amount, items) VALUES ('Shipment', 0, ?)`;
-    db.query(transQuery, [JSON.stringify(items)], (err, result) => {
-        if (err) return res.status(500).json({ error: 'Failed to record shipment transaction' });
+    // Use provided batchId from frontend, or generate a fallback
+    const finalBatchId = batchId || `RCV-${Date.now().toString().slice(-6)}`;
+
+    const query = `INSERT INTO shipments (batch_id, items) VALUES (?, ?)`;
+    db.query(query, [finalBatchId, JSON.stringify(items)], (err, result) => {
+        if (err) return res.status(500).json({ error: 'Failed to record shipment' });
         
         let updateCount = 0;
         let hasError = false;
 
         items.forEach(item => {
-            // Add to stock (+) instead of subtracting
+            // Add stock (+) to inventory
             db.query(`UPDATE products SET quantity = quantity + ? WHERE id = ?`, [item.quantity, item.id], (upErr) => {
                 if (upErr) hasError = true;
                 updateCount++;
                 
                 if (updateCount === items.length) {
                     if (hasError) return res.status(500).json({ error: 'Shipment saved but some stock failed to update' });
-                    res.status(200).json({ message: 'Shipment recorded successfully' });
+                    res.status(200).json({ message: 'Shipment recorded successfully', shipmentId: result.insertId });
                 }
             });
         });
@@ -211,20 +208,19 @@ app.post('/api/restock', (req, res) => {
 
 // 2. Fetch shipment history for the Purchases Ledger
 app.get('/api/restock/history', (req, res) => {
-    db.query("SELECT id, transaction_date as restock_date, items FROM transactions WHERE type = 'Shipment' ORDER BY transaction_date DESC", (err, results) => {
-        if (err) return res.status(500).json({ error: 'Database error fetching history' });
+    db.query("SELECT id, batch_id, created_at, items FROM shipments ORDER BY created_at DESC", (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database error fetching shipment history' });
 
         let history = [];
-        // Flatten the transaction arrays into individual rows for your React ledger
-        results.forEach(tx => {
-            const items = typeof tx.items === 'string' ? JSON.parse(tx.items) : tx.items;
+        results.forEach(shipment => {
+            const items = typeof shipment.items === 'string' ? JSON.parse(shipment.items) : shipment.items;
             items.forEach(item => {
                 history.push({
-                    batch_id: `RCV-${tx.id.toString().padStart(4, '0')}`,
-                    restock_date: tx.restock_date,
+                    batch_id: shipment.batch_id,
+                    restock_date: shipment.created_at,
                     product_name: item.name,
                     quantity_added: item.quantity,
-                    id: tx.id + '-' + item.id 
+                    id: shipment.id + '-' + item.id 
                 });
             });
         });
@@ -232,17 +228,18 @@ app.get('/api/restock/history', (req, res) => {
     });
 });
 
-// --- TRANSACTIONS API ---
+// ==========================================
+// --- TRANSACTIONS API (PURE SALES ONLY) ---
+// ==========================================
 
-// 1. Fetch all transactions (Fixes the blank All Sales page)
+// 1. Fetch all transactions (Now guaranteed to only be pure sales/voids)
 app.get('/api/transactions', (req, res) => {
-    db.query("SELECT id, type, total_amount, DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i') as time, items FROM transactions WHERE type != 'Shipment' ORDER BY transaction_date DESC", (err, results) => {
+    db.query("SELECT id, type, total_amount, DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i') as time, items FROM transactions ORDER BY transaction_date DESC", (err, results) => {
         if (err) return res.status(500).json({ error: 'Database error fetching transactions' });
         res.json(results);
     });
 });
 
-// 2. Fetch a single transaction
 app.get('/api/transactions/:id', (req, res) => {
     const { id } = req.params;
     db.query("SELECT * FROM transactions WHERE id = ?", [id], (err, results) => {
@@ -252,7 +249,7 @@ app.get('/api/transactions/:id', (req, res) => {
     });
 });
 
-// 3. True Delete (Erases record completely and restores stock)
+// 3. True Delete (Erases Sale completely and restores stock)
 app.delete('/api/transactions/:id', (req, res) => {
     const { id } = req.params;
     
@@ -272,6 +269,7 @@ app.delete('/api/transactions/:id', (req, res) => {
             let completed = 0;
             let hasError = false;
 
+            // Since this table is ONLY sales now, we always ADD stock back when deleting a transaction
             items.forEach(item => {
                 db.query("UPDATE products SET quantity = quantity + ? WHERE id = ?", [item.quantity, item.id], (updateErr) => {
                     if (updateErr) hasError = true;
@@ -289,7 +287,6 @@ app.delete('/api/transactions/:id', (req, res) => {
     });
 });
 
-// 4. Void Sale (Keeps record, turns amount to 0, restores stock)
 app.post('/api/transactions/:id/void', (req, res) => {
     const { id } = req.params;
     db.query("SELECT * FROM transactions WHERE id = ?", [id], (err, results) => {
@@ -327,8 +324,8 @@ app.get('/api/dashboard', (req, res) => {
             stats.lowStockCount = stockRes[0]?.lowStock || 0;
             db.query("SELECT SUM(quantity * selling_price) as valuation FROM products", (err, valRes) => {
                 stats.totalValuation = valRes[0]?.valuation || 0;
-                // Updated line below to hide shipments from the recent transactions list on the dashboard
-                db.query("SELECT id, type, total_amount, DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i') as time, items FROM transactions WHERE type != 'Shipment' ORDER BY transaction_date DESC LIMIT 100", (err, transRes) => {
+                // Cleaned up query, no more 'Shipment' filter needed here!
+                db.query("SELECT id, type, total_amount, DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i') as time, items FROM transactions ORDER BY transaction_date DESC LIMIT 100", (err, transRes) => {
                     stats.recentTransactions = transRes || [];
                     res.json(stats);
                 });
@@ -350,7 +347,6 @@ app.post('/api/auth/login', (req, res) => {
     });
 });
 
-// 3. FINAL PORT FIX FOR RENDER
 const PORT = process.env.PORT || 10000; 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
