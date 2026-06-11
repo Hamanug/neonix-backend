@@ -313,7 +313,36 @@ app.post('/api/transactions/:id/void', (req, res) => {
         });
     });
 });
+// ==========================================
+// --- STORE SETTINGS API (RBAC TOGGLES) ---
+// ==========================================
 
+// 1. Get all settings
+app.get('/api/settings', (req, res) => {
+    db.query("SELECT setting_key, setting_value FROM store_settings", (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database error fetching settings' });
+        
+        // Convert MySQL tinyint (1/0) back to true/false for React
+        const settings = {};
+        results.forEach(row => {
+            settings[row.setting_key] = row.setting_value === 1;
+        });
+        res.json(settings);
+    });
+});
+
+// 2. Update a specific setting
+app.put('/api/settings', (req, res) => {
+    const { key, value } = req.body;
+    
+    // Convert React true/false to MySQL 1/0
+    const intValue = value ? 1 : 0;
+    
+    db.query("UPDATE store_settings SET setting_value = ? WHERE setting_key = ?", [intValue, key], (err) => {
+        if (err) return res.status(500).json({ error: 'Database error updating settings' });
+        res.json({ message: 'Setting updated successfully' });
+    });
+});
 // --- DASHBOARD & AUTH ---
 
 app.get('/api/dashboard', (req, res) => {
