@@ -320,8 +320,11 @@ app.get('/api/dashboard', (req, res) => {
     const stats = {};
     db.query("SELECT SUM(total_amount) as revenue FROM transactions WHERE DATE(transaction_date) = CURDATE() AND type = 'Sale'", (err, revRes) => {
         stats.todayRevenue = revRes[0]?.revenue || 0;
-        db.query("SELECT COUNT(*) as lowStock FROM products WHERE quantity <= alert_quantity", (err, stockRes) => {
+        
+        // FIXED BUG: Added "AND alert_quantity > 0" so items with a 0 threshold are ignored
+        db.query("SELECT COUNT(*) as lowStock FROM products WHERE quantity <= alert_quantity AND alert_quantity > 0", (err, stockRes) => {
             stats.lowStockCount = stockRes[0]?.lowStock || 0;
+            
             db.query("SELECT SUM(quantity * selling_price) as valuation FROM products", (err, valRes) => {
                 stats.totalValuation = valRes[0]?.valuation || 0;
                 // Cleaned up query, no more 'Shipment' filter needed here!
