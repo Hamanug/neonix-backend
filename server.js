@@ -343,6 +343,33 @@ app.put('/api/settings', (req, res) => {
         res.json({ message: 'Setting updated successfully' });
     });
 });
+
+
+// ==========================================
+// --- STORE SETTINGS API (RBAC TOGGLES) ---
+// ==========================================
+
+app.get('/api/settings', (req, res) => {
+    db.query("SELECT setting_key, setting_value FROM store_settings", (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database error fetching settings' });
+        
+        const settings = {};
+        results.forEach(row => {
+            settings[row.setting_key] = row.setting_value === 1;
+        });
+        res.json(settings);
+    });
+});
+
+app.put('/api/settings', (req, res) => {
+    const { key, value } = req.body;
+    const intValue = value ? 1 : 0;
+    
+    db.query("UPDATE store_settings SET setting_value = ? WHERE setting_key = ?", [intValue, key], (err) => {
+        if (err) return res.status(500).json({ error: 'Database error updating settings' });
+        res.json({ message: 'Setting updated successfully' });
+    });
+});
 // --- DASHBOARD & AUTH ---
 
 app.get('/api/dashboard', (req, res) => {
