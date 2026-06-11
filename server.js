@@ -296,9 +296,19 @@ app.delete('/api/transactions/:id', (req, res) => {
             let completed = 0;
             let hasError = false;
 
-            // Since this table is ONLY sales now, we always ADD stock back when deleting a transaction
             items.forEach(item => {
-                db.query("UPDATE products SET quantity = quantity + ? WHERE id = ?", [item.quantity, item.id], (updateErr) => {
+                // --- THE MATH FIX ---
+                // Sales originally subtracted stock. Reversing a Sale = ADD (+) stock.
+                // Corrections originally added the raw number. Reversing = SUBTRACT (-) the raw number.
+                let updateQuery = "";
+                if (transaction.type === 'Sale') {
+                    updateQuery = "UPDATE products SET quantity = quantity + ? WHERE id = ?";
+                } else {
+                    // Covers 'Correction' and legacy 'Shipment'
+                    updateQuery = "UPDATE products SET quantity = quantity - ? WHERE id = ?";
+                }
+
+                db.query(updateQuery, [item.quantity, item.id], (updateErr) => {
                     if (updateErr) hasError = true;
                     completed++;
                     
