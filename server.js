@@ -134,6 +134,33 @@ app.delete('/api/products/:id', (req, res) => {
     });
 });
 
+// --- NEW ADJUSTMENT ROUTE ---
+app.post('/api/products/:id/adjust', (req, res) => {
+    const { id } = req.params;
+    const { quantityChange, type, reason } = req.body;
+
+    if (quantityChange === undefined || isNaN(quantityChange)) {
+        return res.status(400).json({ error: 'Valid quantity change is required' });
+    }
+
+    db.query('UPDATE products SET quantity = quantity + ? WHERE id = ?', [quantityChange, id], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database error updating stock' });
+        
+        // Fetch product name to log the correction in the transactions ledger
+        db.query('SELECT name, selling_price FROM products WHERE id = ?', [id], (err2, prodRes) => {
+            if (!err2 && prodRes.length > 0) {
+                const product = prodRes[0];
+                const fakeItem = [{ id: id, name: product.name, quantity: quantityChange, price: product.selling_price, note: reason }];
+                
+                db.query('INSERT INTO transactions (type, total_amount, items) VALUES (?, ?, ?)', 
+                    ['Correction', 0, JSON.stringify(fakeItem)]
+                );
+            }
+            res.json({ message: 'Stock adjusted successfully' });
+        });
+    });
+});
+
 app.post('/api/checkout', (req, res) => {
     const { cart, totalAmount, type } = req.body;
     if (!cart || cart.length === 0) return res.status(400).json({ error: 'Cart is empty' });
@@ -313,6 +340,7 @@ app.post('/api/transactions/:id/void', (req, res) => {
         });
     });
 });
+
 // ==========================================
 // --- STORE SETTINGS API (RBAC TOGGLES) ---
 // ==========================================
@@ -344,32 +372,6 @@ app.put('/api/settings', (req, res) => {
     });
 });
 
-
-// ==========================================
-// --- STORE SETTINGS API (RBAC TOGGLES) ---
-// ==========================================
-
-app.get('/api/settings', (req, res) => {
-    db.query("SELECT setting_key, setting_value FROM store_settings", (err, results) => {
-        if (err) return res.status(500).json({ error: 'Database error fetching settings' });
-        
-        const settings = {};
-        results.forEach(row => {
-            settings[row.setting_key] = row.setting_value === 1;
-        });
-        res.json(settings);
-    });
-});
-
-app.put('/api/settings', (req, res) => {
-    const { key, value } = req.body;
-    const intValue = value ? 1 : 0;
-    
-    db.query("UPDATE store_settings SET setting_value = ? WHERE setting_key = ?", [intValue, key], (err) => {
-        if (err) return res.status(500).json({ error: 'Database error updating settings' });
-        res.json({ message: 'Setting updated successfully' });
-    });
-});
 // --- DASHBOARD & AUTH ---
 
 app.get('/api/dashboard', (req, res) => {
@@ -377,8 +379,8 @@ app.get('/api/dashboard', (req, res) => {
     db.query("SELECT SUM(total_amount) as revenue FROM transactions WHERE DATE(transaction_date) = CURDATE() AND type = 'Sale'", (err, revRes) => {
         stats.todayRevenue = revRes[0]?.revenue || 0;
         
-        // FIXED BUG: Added "AND alert_quantity > 0" so items with a 0 threshold are ignored
-        db.query("SELECT COUNT(*) as lowStock FROM products WHERE quantity <= alert_quantity AND alert_quantity > 0", (err, stockRes) => {
+        // FIXED BUG: Removed "AND alert_quantity > 0" so items with a 0 threshold trigger properly
+        db.query("SELECT COUNT(*) as lowStock FROM products WHERE quantity <= alert_quantity", (err, stockRes) => {
             stats.lowStockCount = stockRes[0]?.lowStock || 0;
             
             db.query("SELECT SUM(quantity * selling_price) as valuation FROM products", (err, valRes) => {
